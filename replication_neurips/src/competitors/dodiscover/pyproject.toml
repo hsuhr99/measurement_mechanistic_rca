@@ -1,0 +1,157 @@
+[build-system]
+build-backend = 'setuptools.build_meta'
+requires = ['setuptools >= 64.0.0']
+
+[project]
+name = "dodiscover"
+version = "0.0.0dev0"
+description = "Causal discovery in Python"
+readme = "README.md"
+license = { file = 'LICENSE' }
+classifiers = [
+    'Development Status :: 4 - Beta',
+    "License :: OSI Approved :: MIT License",
+    'Programming Language :: Python :: 3.10',
+    'Programming Language :: Python :: 3.11',
+    'Programming Language :: Python :: 3.12',
+]
+keywords = [
+    'causality',
+    'causal discovery',
+    'causal-inference',
+    'structure learning',
+]
+maintainers = [{ name = "PyWhy", email = "adam.li@columbia.edu" }]
+requires-python = ">=3.10"
+
+dependencies = [
+    'numpy>=1.25.0,<2.0',
+    'scipy>=1.9.0',
+    'scikit-learn>=1.5.0',
+    'pandas>=1.5.0',
+    'networkx>=3.2.0',
+    'pygam>=0.9.0',
+]
+
+[project.optional-dependencies]
+all = [
+    'dodiscover[build]',
+    'dodiscover[doc]',
+    'dodiscover[style]',
+    'dodiscover[test]',
+]
+build = ['build', 'twine', 'numpy>=1.25.0,<2.0']
+doc = [
+    'memory-profiler',
+    'numpydoc',
+    'pooch',
+    'pydata-sphinx-theme',
+    'sphinx==7.2.6',
+    'sphinx-copybutton',
+    'sphinx-design',
+    'sphinx-gallery',
+    'sphinx-issues',
+    'sphinx_autodoc_typehints',
+    'sphinxcontrib-bibtex',
+    'portray',
+    'matplotlib',
+    'ipython',
+    'nbsphinx',
+    'pandas',
+    'seaborn',
+    'joblib',
+    'graphviz',
+    'pygraphviz',
+    'pgmpy',
+]
+style = [
+    "pre-commit",
+    'black',
+    'codespell',
+    'isort',
+    'pydocstyle',
+    'pydocstyle[toml]',
+    'rstcheck',
+    'ruff',
+    'toml-sort',
+    'yamllint',
+    'mypy',
+    'toml',
+]
+test = [
+    'joblib',
+    'pandas',
+    'pytest',
+    'pytest-cov',
+    'flaky',
+    'tqdm',
+    'pooch',
+    'causal-learn',
+    'statsmodels',
+    'pywhy-graphs',
+    'dowhy',
+    'bnlearn',
+    'ananke-causal<0.4.0', # XXX: API changed to include "Vertices", which has not refactored here yet
+]
+
+[tool.setuptools]
+include-package-data = false
+
+[tool.setuptools.package-data]
+'testdata' = ['dodiscover/testdata/*']
+
+[tool.setuptools.packages.find]
+include = ['dodiscover*']
+exclude = ['*tests']
+
+[tool.black]
+line-length = 100
+target-version = ['py310']
+include = '\.pyi?$'
+extend-exclude = '''
+(
+      __pycache__
+    | \.github
+    | setup.py
+    | docs/
+)
+'''
+
+[tool.pylint]
+max-line-length = 120
+disable = ["W0511"]
+
+[tool.isort]
+profile = 'black'
+multi_line_output = 3
+line_length = 100
+py_version = 38
+extend_skip_glob = ['setup.py', 'docs/*', 'examples/*']
+
+[tool.pydocstyle]
+convention = 'numpy'
+ignore-decorators = '(copy_doc|property|.*setter|.*getter|pyqtSlot|Slot)'
+match = '^(?!setup|__init__|test_).*\.py'
+match-dir = '^dodiscover.*'
+add_ignore = 'D100,D104,D105,D107'
+
+[tool.mypy]
+ignore_missing_imports = true
+no_site_packages = true
+
+[tool.pytest.ini_options]
+minversion = '6.0'
+addopts = '--durations 20 --junit-xml=junit-results.xml --verbose'
+filterwarnings = []
+log_cli = true
+log_cli_level = 'ERROR'
+
+[tool.coverage.run]
+branch = true
+cover_pylib = false
+source = ['dodiscover']
+omit = ['**/__init__.py', '**/tests/**', '**/testdata/**']
+
+[tool.coverage.report]
+exclude_lines = ['pragma: no cover', 'if __name__ == .__main__.:']
+precision = 2

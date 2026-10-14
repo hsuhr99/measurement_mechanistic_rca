@@ -1,0 +1,15 @@
+include README.md
+include README_PYPI.md
+include LICENSE
+include THIRD_PARTY_NOTICES.md
+include requirements.txt
+include pyproject.toml
+recursive-include measurement_mechanistic_rca *.py
+recursive-include replication_neurips/src/cali *.py
+recursive-include replication_neurips/src/competitors/dodiscover/dodiscover *.py
+include replication_neurips/src/competitors/dodiscover/LICENSE
+prune replication_neurips/src/competitors/topic
+prune replication_neurips/src/competitors/M2OE
+prune replication_neurips/src/plots
+prune replication_neurips/src/results
+global-exclude __pycache__ *.py[cod] .DS_Store

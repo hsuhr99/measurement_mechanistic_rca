@@ -1,0 +1,42 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "measurement-mechanistic-rca"
+version = "0.1.1"
+description = "Python interface for measurement-mechanistic root cause analysis."
+readme = "README_PYPI.md"
+requires-python = ">=3.10"
+license = "CC-BY-4.0"
+dependencies = [
+    "joblib>=1.3",
+    "networkx>=3.0",
+    "numpy>=1.24",
+    "pygam>=0.9",
+    "scikit-learn>=1.3",
+    "scipy>=1.10",
+]
+
+[project.optional-dependencies]
+causal-discovery = [
+    "pandas>=2.0",
+    "pygam>=0.9",
+]
+notebooks = ["jupyter>=1.0"]
+qgam = ["rpy2>=3.5"]
+replication = [
+    "matplotlib>=3.7",
+    "pandas>=2.0",
+    "seaborn>=0.13",
+]
+
+[project.urls]
+Homepage = "https://github.com/hsuhr99/measurement_mechanistic_rca"
+Repository = "https://github.com/hsuhr99/measurement_mechanistic_rca"
+Issues = "https://github.com/hsuhr99/measurement_mechanistic_rca/issues"
+Paper = "https://openreview.net/forum?id=2sxylzR1R2"
+
+[tool.setuptools.packages.find]
+where = [".", "replication_neurips/src", "replication_neurips/src/competitors/dodiscover"]
+include = ["measurement_mechanistic_rca*", "cali*", "dodiscover*"]
