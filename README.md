@@ -2,29 +2,7 @@
 
 This repository contains a Python package for measurement-mechanistic root cause analysis and the replication package for the NeurIPS paper [Root Cause Analysis of Measurement and Mechanistic Anomalies](https://openreview.net/forum?id=2sxylzR1R2).
 
-The top-level package is the recommended entry point for users. It installs with `pip`, avoids the R dependency by default, and exposes the method for several practical settings:
-
-- contaminated data, with priors learned implicitly by the method;
-- contaminated data, with user-provided measurement and generative priors;
-- uncontaminated training data, followed by inference on new samples with provided priors.
-- causal discovery with the optional bundled NoGAM helper, followed by measurement-mechanistic RCA.
-
-The original experiment code is kept in `replication_neurips/`. The git repository is intended to contain both the lightweight package and the complete replication artifact. A wheel or PyPI-style distribution should contain only the high-level package, the minimal `cali` implementation needed to run the method, and the bundled NoGAM causal-discovery helper. It should not contain the full replication package or external baselines.
-
-## Citation
-
-If you use this code, please cite:
-
-```bibtex
-@inproceedings{suhr:2026:rca,
-  title={Root Cause Analysis of Measurement and Mechanistic Anomalies},
-  author={Hendrik Suhr and David Kaltenpoth and Jilles Vreeken},
-  booktitle={Advances in Neural Information Processing Systems},
-  volume={39},
-  year={2026},
-  url={https://openreview.net/forum?id=2sxylzR1R2}
-}
-```
+Install the method with `pip`, or use the replication package to run the paper experiments. The default installation requires no R.
 
 ## Installation
 
@@ -48,16 +26,6 @@ source .venv/bin/activate
 pip install -e .
 ```
 
-The default backend is the pure-Python spline expectile variant using `pygam`. A scikit-learn spline quantile backend is also available for comparison.
-
-Editable installs from a full repository checkout can also use the bundled examples and replication helpers. Built package distributions are intentionally smaller: they include the public `measurement_mechanistic_rca` API, the minimal `cali` method implementation, and NoGAM via the bundled `dodiscover` code. The complete NeurIPS replication package remains in the git repository.
-
-The R/qgam backend is still available for comparison if R, `qgam`, `mgcv`, and `rpy2` are installed:
-
-```bash
-pip install "measurement-mechanistic-rca[qgam]"
-```
-
 To run the notebook examples:
 
 ```bash
@@ -65,9 +33,23 @@ pip install -e ".[causal-discovery,notebooks]"
 jupyter notebook examples/method_usage.ipynb
 ```
 
-## Quick Start
+## Running Example: Same Root Cause, Different Anomaly Types
 
-The graph must be a `networkx.DiGraph`, and the data must be an `n x d` NumPy array whose columns match the graph node indices.
+Consider the causal graph `W <- X -> Y -> Z`. We generate 500 observations
+using `Y = 0.8 X + noise`, `Z = 1.2 Y + noise`, and `W = -X + noise`,
+with independent Gaussian noise. Columns follow the node indices `[X, Y, Z, W]`.
+
+We inject two anomalies at **Y**:
+
+- **Row 0 — measurement:** add 4 to the recorded Y *after* generating Z.
+  The physical process is unchanged, so Z does not respond to the recording error.
+- **Row 1 — mechanistic:** add 4 to Y *before* generating Z.
+  The shift propagates to Z through its usual mechanism.
+
+Thus both rows violate `X -> Y`, but only the measurement anomaly also breaks
+`Y -> Z`. Neither changes `X -> W`.
+
+### 1. Generate the synthetic data
 
 ```python
 import networkx as nx
@@ -75,66 +57,142 @@ import numpy as np
 
 from measurement_mechanistic_rca import MeasurementMechanisticRCA
 
-dag = nx.DiGraph([(0, 1), (1, 2)])
-data = np.random.normal(size=(100, 3))
+# Column indices: X=0, Y=1, Z=2, W=3.
+names = ["X", "Y", "Z", "W"]
+dag = nx.DiGraph([(0, 1), (1, 2), (0, 3)])
 
-model = MeasurementMechanisticRCA()
-result = model.fit_explain(data, dag)
 
-print(result.assignment)
-print(result.top_features(sample_idx=0, k=3))
+def make_data(n, seed, contaminated=False):
+    rng = np.random.default_rng(seed)
+    x = rng.normal(size=n)
+    y = 0.8 * x + rng.normal(scale=0.15, size=n)
+
+    if contaminated:
+        y[1] += 4.0  # Mechanism shift at Y, BEFORE generating its child Z.
+
+    z = 1.2 * y + rng.normal(scale=0.15, size=n)
+    w = -x + rng.normal(scale=0.15, size=n)
+
+    if contaminated:
+        y[0] += 4.0  # Measurement error at Y, AFTER generating Z.
+
+    return np.column_stack([x, y, z, w])
+
+
+data = make_data(n=500, seed=7, contaminated=True)
 ```
 
-`result.feature_scores[i, j]` scores feature `j` as a root cause for sample `i`. `result.classifications[i, j]` is `1` for measurement-origin explanations and `0` for generative-origin explanations.
+![The two injected anomalies across the three causal relationships](examples/assets/running_example.png)
 
-An executable walkthrough of the main usage patterns is provided in `examples/method_usage.ipynb`.
+Gray points show normal observations, blue the measurement anomaly, and orange
+the mechanistic anomaly.
 
-## Contaminated Data With Provided Priors
+### 2. Localize and classify the two anomalies
 
-If you have prior probabilities for measurement and generative anomalies, pass them directly. Priors can be global vectors of shape `(d,)` or sample-specific arrays of shape `(n, d)`.
+Use `fit_explain(data, dag)` to learn the mechanisms and explain the contaminated
+data in one step.
 
 ```python
-measurement_priors = np.array([0.01, 0.10, 0.01])
-generative_priors = np.array([0.02, 0.02, 0.05])
+np.random.seed(7)
+result = MeasurementMechanisticRCA().fit_explain(data, dag)
 
-model = MeasurementMechanisticRCA(
-    prior_mode="single_root",
+
+def show_results(result):
+    for row in (0, 1):
+        cause = result.top_features(sample_idx=row, k=1)[0]
+        print(f"row {row}: root cause {names[cause.feature]}, type {cause.anomaly_type}")
+
+
+show_results(result)
+```
+
+Expected output:
+
+```text
+row 0: root cause Y, type measurement
+row 1: root cause Y, type mechanistic
+```
+
+Both anomalies are correctly localized at Y and classified by type. The unusual
+Z value in row 1 is a downstream effect of the mechanism shift at Y.
+
+To inspect the highest-ranked cause for a sample:
+
+```python
+cause = result.top_features(sample_idx=0, k=1)[0]
+print(names[cause.feature], cause.anomaly_type)  # Y measurement
+```
+
+The result also includes the root-cause score and conditional confidence in its type:
+
+```python
+print(cause.score)
+print(cause.conditional_confidence)
+```
+
+Conditional confidence compares the competing type explanations while keeping
+other assignments fixed. It is a cost difference, not a probability. Types are
+`measurement`, `mechanistic`, `uncertain` when the origin is unresolved, or
+`both` when inference with priors selects both types.
+
+To inspect the features assigned to each anomaly type:
+
+```python
+measurement_features = result.assignment[0]["measurement"]
+mechanistic_features = result.assignment[1]["mechanistic"]
+
+print([names[j] for j in measurement_features])  # ['Y']
+print([names[j] for j in mechanistic_features])  # ['Y']
+```
+
+### 3. Train on clean data and explain future samples
+
+Use `fit` to learn the normal mechanisms from clean data, then `explain` for
+new samples. This requires prior probabilities for measurement and mechanistic
+anomalies, since clean data does not reveal how often future interventions occur.
+Here we set each probability to 1% per feature.
+
+```python
+clean_data = make_data(n=500, seed=8)
+new_samples = make_data(n=100, seed=9, contaminated=True)
+
+measurement_priors = np.full(4, 0.01)
+mechanistic_priors = np.full(4, 0.01)
+
+np.random.seed(7)
+model = MeasurementMechanisticRCA().fit(clean_data, dag)
+future_result = model.explain(
+    new_samples,
+    measurement_priors=measurement_priors,
+    mechanistic_priors=mechanistic_priors,
 )
-result = model.fit_explain(
+show_results(future_result)
+```
+
+This identifies Y as the root cause for both new anomalies and returns the same
+types as above. The learned mechanisms remain fixed during `explain`.
+
+### Optional: supplied priors for contaminated data
+
+The same priors can also be passed to `fit_explain`:
+
+```python
+np.random.seed(7)
+result_with_priors = MeasurementMechanisticRCA().fit_explain(
     data,
     dag,
     measurement_priors=measurement_priors,
-    generative_priors=generative_priors,
+    mechanistic_priors=mechanistic_priors,
 )
+show_results(result_with_priors)
 ```
 
-Use `prior_mode="single_root"` for the fast setting that assumes one active root cause per sample. Use `prior_mode="exhaustive"` to enumerate all assignments; this is only practical for small graphs because it scales as `4^d`.
+Priors can have shape `(d,)` for one probability per feature or `(n, d)` for
+sample-specific probabilities. With supplied priors, the default `single_root`
+mode assumes at most one root-cause feature per sample; `prior_mode="exhaustive"`
+allows multiple root causes in small graphs.
 
-## Clean Training Data Then New Samples
-
-When mechanisms are learned from uncontaminated data, priors must be provided for inference on new samples. The package keeps the training scaler, mechanisms, and residual distributions fixed.
-
-```python
-clean_data = np.random.normal(size=(500, 3))
-new_samples = np.random.normal(size=(10, 3))
-
-measurement_priors = np.array([0.01, 0.10, 0.01])
-generative_priors = np.array([0.02, 0.02, 0.05])
-
-model = MeasurementMechanisticRCA()
-model.fit(clean_data, dag)
-result = model.explain(
-    new_samples,
-    measurement_priors=measurement_priors,
-    generative_priors=generative_priors,
-)
-```
-
-The same workflow is included in the notebook:
-
-```bash
-jupyter notebook examples/method_usage.ipynb
-```
+Run the full example in the [notebook](https://github.com/hsuhr99/measurement_mechanistic_rca/blob/main/examples/method_usage.ipynb) or with `python examples/running_example.py` from a repository checkout.
 
 ## Causal Discovery Then RCA
 
@@ -150,11 +208,11 @@ result = model.fit_explain(
     data,
     learned_dag,
     measurement_priors=measurement_priors,
-    generative_priors=generative_priors,
+    mechanistic_priors=mechanistic_priors,
 )
 ```
 
-`discover_dag_nogam` wraps the bundled Python NoGAM implementation. It has no R dependency and is available from PyPI when installing with the `causal-discovery` extra. The repository also includes `discover_dag_topic` for the bundled TOPIC implementation when running from a full checkout, and `discover_dag_from_order` for small examples where a causal order is known. Minimal wheel/PyPI-style distributions are not expected to bundle TOPIC.
+Install the `causal-discovery` extra to use NoGAM.
 
 ## Regression Backends
 
@@ -162,7 +220,7 @@ Choose the spline regression backend through `regression_backend`:
 
 - `expectile`: default pure-Python spline expectile regression.
 - `quantile`: pure-Python scikit-learn spline median-regression replacement.
-- `qgam`: R/qgam backend used in all paper experiments.
+- `qgam`: R/qgam backend used in the paper experiments; requires R, `qgam`, `mgcv`, and `pip install "measurement-mechanistic-rca[qgam]"`.
 
 ```python
 MeasurementMechanisticRCA()
@@ -172,22 +230,24 @@ MeasurementMechanisticRCA(regression_backend="qgam")
 
 ## Replication Package
 
-The paper replication package lives in `replication_neurips/`. It contains the experiment runner, baselines, cached result files, plotting code, and Docker-based build instructions. Clone the git repository to run these exact paper experiments; they are intentionally not part of the PyPI package. For the full replication setup, including the recommended Docker build, see `replication_neurips/README.md`.
+For the paper experiments, follow the [replication README](replication_neurips/README.md),
+including its Docker setup. It covers synthetic RCA and classification, causal
+discovery, Causal Chamber, Sachs, and robustness studies.
 
-Representative paper experiments:
+## Citation
 
-```bash
-python main.py -e rca
-python main.py -e classification
-python main.py -e causal_discovery
-python main.py -e rca_cc_strong
-python main.py -e classification_cc_strong
-python main.py -e sachs
+If you use this code, please cite:
+
+```bibtex
+@inproceedings{suhr:2026:rca,
+  title={Root Cause Analysis of Measurement and Mechanistic Anomalies},
+  author={Hendrik Suhr and David Kaltenpoth and Jilles Vreeken},
+  booktitle={Advances in Neural Information Processing Systems},
+  volume={39},
+  year={2026},
+  url={https://openreview.net/forum?id=2sxylzR1R2}
+}
 ```
-
-These cover the standard synthetic root-cause localization experiment, anomaly-type classification, RCA with learned causal graphs, Causal Chamber real-data variants, and the Sachs real-world experiment. The replication package also contains robustness and sensitivity studies such as `rca_dag_misspecification`, `rca_confounding`, `rca_heteroscedasticity`, `rca_soft_interventions`, `rca_sample_sensitivity`, `rca_feature_sensitivity`, and the corresponding classification variants.
-
-The generated result tables are written under `replication_neurips/src/results/`, and plots are written under `replication_neurips/src/plots/`.
 
 ## License
 

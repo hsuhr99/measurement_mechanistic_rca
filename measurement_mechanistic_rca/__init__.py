@@ -1,6 +1,6 @@
 """Public Python interface for measurement-mechanistic RCA."""
 
-from .api import MeasurementMechanisticRCA, RCAResult, labels_to_priors, run_rca
+from .api import MeasurementMechanisticRCA, RCAResult, RootCause, labels_to_priors, run_rca
 from .discovery import (
     dag_from_adjacency,
     discover_dag_from_order,
@@ -11,6 +11,7 @@ from .discovery import (
 __all__ = [
     "MeasurementMechanisticRCA",
     "RCAResult",
+    "RootCause",
     "dag_from_adjacency",
     "discover_dag_from_order",
     "discover_dag_nogam",

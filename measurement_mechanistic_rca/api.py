@@ -37,28 +37,106 @@ RegressionBackend = Literal["quantile", "expectile", "qgam"]
 PriorMode = Literal["single_root", "exhaustive"]
 
 
+AnomalyType = Literal["measurement", "mechanistic", "uncertain", "both"]
+
+
+@dataclass(frozen=True)
+class RootCause:
+    """One ranked candidate, with a conditional type-confidence score."""
+
+    feature: int
+    anomaly_type: AnomalyType
+    score: float
+    conditional_confidence: float
+
+
 @dataclass
 class RCAResult:
-    """Container returned by all public RCA entry points."""
+    """RCA assignments and per-sample, per-feature scores.
+
+    Assignment groups are measurement, mechanistic, uncertain, and (when
+    selected by inference with priors) both. Ranked candidates need not be
+    selected assignments. Conditional confidence is a cost difference, not
+    a probability; its definition follows the selected inference mode.
+    """
 
     assignment: dict[int, dict[str, Any]]
     feature_scores: np.ndarray
     classifications: np.ndarray
     confidences: np.ndarray
 
-    def top_features(self, sample_idx: int, k: int = 5) -> list[tuple[int, float, str]]:
-        """Return the top-k features for one sample as ``(feature, score, kind)``."""
+    def __post_init__(self):
+        key_names = {
+            "measurement_corrections": "measurement",
+            "generative_attributions": "mechanistic",
+            "mechanistic_attributions": "mechanistic",
+            "uncertain_origin": "uncertain",
+        }
+        self.assignment = {
+            row: {
+                key_names.get(key, key): (
+                    {
+                        feature: {
+                            ("conditional_confidence" if field == "confidence" else field): value
+                            for field, value in details.items()
+                        }
+                        for feature, details in group.items()
+                    } if isinstance(group, dict) else group
+                )
+                for key, group in record.items()
+            }
+            for row, record in self.assignment.items()
+        }
+
+    @property
+    def conditional_confidences(self) -> np.ndarray:
+        """Conditional type-confidence scores, indexed by sample and feature."""
+        return self.confidences
+
+    def top_features(self, sample_idx: int, k: int = 5) -> list[RootCause]:
+        """Return ranked candidates with named feature, type, and score fields."""
+        if k < 0:
+            raise ValueError("k must be non-negative")
         scores = np.asarray(self.feature_scores[sample_idx])
         order = np.argsort(-scores)[:k]
+        record = self.assignment.get(sample_idx, {})
         rows = []
         for feature_idx in order:
-            kind = "measurement" if self.classifications[sample_idx, feature_idx] >= 0.5 else "generative"
-            rows.append((int(feature_idx), float(scores[feature_idx]), kind))
+            confidence = float(self.conditional_confidences[sample_idx, feature_idx])
+            # Explicit assignments preserve unresolved origins and joint states.
+            kind = next(
+                (label for label in ("both", "uncertain", "measurement", "mechanistic")
+                 if feature_idx in record.get(label, {})),
+                None,
+            )
+            if kind is None:
+                if confidence == 0 or not np.isfinite(confidence):
+                    kind = "uncertain"
+                else:
+                    kind = "measurement" if self.classifications[sample_idx, feature_idx] >= 0.5 else "mechanistic"
+            rows.append(RootCause(
+                feature=int(feature_idx),
+                anomaly_type=kind,
+                score=float(scores[feature_idx]),
+                conditional_confidence=confidence,
+            ))
         return rows
 
 
+def _make_result(raw_result, *, with_priors=False):
+    assignment, scores, classifications, confidences = raw_result
+    if with_priors:
+        # The prior backend stores STATE_BOTH under its legacy uncertain key.
+        assignment = {
+            row: {("both" if key == "uncertain_origin" else key): value
+                  for key, value in record.items()}
+            for row, record in assignment.items()
+        }
+    return RCAResult(assignment, scores, classifications, confidences)
+
+
 def labels_to_priors(labels: dict[int, dict[str, list[int]]], n_features: int, smoothing: float = 1e-3):
-    """Estimate global measurement and generative prior probabilities from labels."""
+    """Estimate measurement and mechanistic priors; legacy "generative" labels are accepted."""
     measurement = np.full(n_features, smoothing, dtype=float)
     generative = np.full(n_features, smoothing, dtype=float)
     denom = max(len(labels), 1) + 2.0 * smoothing
@@ -66,7 +144,7 @@ def labels_to_priors(labels: dict[int, dict[str, list[int]]], n_features: int, s
     for row_labels in labels.values():
         for feature_idx in row_labels.get("measurement", []):
             measurement[feature_idx] += 1.0
-        for feature_idx in row_labels.get("generative", []):
+        for feature_idx in set(row_labels.get("mechanistic", [])) | set(row_labels.get("generative", [])):
             generative[feature_idx] += 1.0
 
     return np.clip(measurement / denom, 1e-12, 1.0 - 1e-12), np.clip(generative / denom, 1e-12, 1.0 - 1e-12)
@@ -78,6 +156,9 @@ class MeasurementMechanisticRCA:
     Use ``fit_explain`` when the data you pass already contains anomalous
     samples. Use ``fit`` followed by ``explain`` when mechanisms are learned
     from clean data and root-cause inference is run on later samples.
+
+    ``generative_priors`` remains a legacy keyword alias for ``mechanistic_priors``.
+    Pass only one of these names.
     """
 
     def __init__(
@@ -118,20 +199,25 @@ class MeasurementMechanisticRCA:
         self,
         data: np.ndarray,
         measurement_priors,
-        generative_priors,
+        mechanistic_priors=None,
         prior_mode: PriorMode | None = None,
+        *,
+        generative_priors=None,
     ) -> RCAResult:
         """Explain new samples with fitted clean mechanisms.
 
         Priors are required in this mode because clean training data does not
         contain enough information to infer anomaly frequencies for new rows.
         """
+        mechanistic_priors = _resolve_mechanistic_priors(mechanistic_priors, generative_priors)
+        if measurement_priors is None or mechanistic_priors is None:
+            raise ValueError("Pass both measurement_priors and mechanistic_priors.")
         self._check_is_fitted()
         scaled_data = self.scaler_.transform(_as_2d_array(data))
         return self._explain_scaled_with_fitted_model(
             scaled_data=scaled_data,
             measurement_priors=measurement_priors,
-            generative_priors=generative_priors,
+            generative_priors=mechanistic_priors,
             prior_mode=prior_mode or self.prior_mode,
         )
 
@@ -140,13 +226,16 @@ class MeasurementMechanisticRCA:
         data: np.ndarray,
         dag: nx.DiGraph,
         measurement_priors=None,
-        generative_priors=None,
+        mechanistic_priors=None,
         prior_mode: PriorMode | None = None,
+        *,
+        generative_priors=None,
     ) -> RCAResult:
         """Run RCA on a contaminated batch, with optional fixed priors."""
         data = _as_2d_array(data)
-        if (measurement_priors is None) != (generative_priors is None):
-            raise ValueError("Pass both measurement_priors and generative_priors, or neither.")
+        mechanistic_priors = _resolve_mechanistic_priors(mechanistic_priors, generative_priors)
+        if (measurement_priors is None) != (mechanistic_priors is None):
+            raise ValueError("Pass both measurement_priors and mechanistic_priors, or neither.")
 
         if measurement_priors is None:
             result = cali(
@@ -163,13 +252,13 @@ class MeasurementMechanisticRCA:
                 dag=dag,
                 data=data,
                 measurement_probs=measurement_priors,
-                generative_probs=generative_priors,
+                generative_probs=mechanistic_priors,
                 regression_alg=self._regression_alg(),
                 regression_settings=self._regression_settings(),
                 sampler_setting=self.sampler,
                 meas_setting=self.measurement_setting,
             )
-        return RCAResult(*result)
+        return _make_result(result, with_priors=measurement_priors is not None)
 
     def _explain_scaled_with_fitted_model(
         self,
@@ -180,7 +269,7 @@ class MeasurementMechanisticRCA:
     ) -> RCAResult:
         n, d = scaled_data.shape
         meas_probs = _prepare_probabilities(measurement_priors, n, d, "measurement_priors")
-        gen_probs = _prepare_probabilities(generative_priors, n, d, "generative_priors")
+        gen_probs = _prepare_probabilities(generative_priors, n, d, "mechanistic_priors")
         state_probs = _state_probabilities(meas_probs, gen_probs)
         residuals = calculate_residuals(self.functions_, scaled_data)
         sampler = _make_sampler(self.sampler, scaled_data, self.dag_)
@@ -260,7 +349,7 @@ class MeasurementMechanisticRCA:
             if record is not None:
                 assignment[row_id] = record
 
-        return RCAResult(assignment, feature_scores, classifications, confidences)
+        return _make_result((assignment, feature_scores, classifications, confidences), with_priors=True)
 
     def _regression_alg(self) -> str:
         if self.regression_backend == "quantile":
@@ -330,3 +419,9 @@ def _as_2d_array(data: np.ndarray) -> np.ndarray:
     if np.any(~np.isfinite(arr)):
         raise ValueError("Data must contain only finite values.")
     return arr
+
+
+def _resolve_mechanistic_priors(mechanistic_priors, generative_priors):
+    if mechanistic_priors is not None and generative_priors is not None:
+        raise ValueError("Pass only mechanistic_priors; generative_priors is its legacy alias.")
+    return mechanistic_priors if mechanistic_priors is not None else generative_priors

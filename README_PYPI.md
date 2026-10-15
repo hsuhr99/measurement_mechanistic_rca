@@ -2,7 +2,7 @@
 
 Python package for measurement-mechanistic root cause analysis from the NeurIPS paper [Root Cause Analysis of Measurement and Mechanistic Anomalies](https://openreview.net/forum?id=2sxylzR1R2).
 
-This package exposes the method for practical use without requiring the full paper replication package. By default it uses a pure-Python spline expectile backend and has no R dependency.
+The default installation uses Python spline expectile regression and requires no R.
 
 Repository, executable notebook examples, and the full replication package are available at [github.com/hsuhr99/measurement_mechanistic_rca](https://github.com/hsuhr99/measurement_mechanistic_rca).
 
@@ -26,9 +26,23 @@ Install the optional R/qgam comparison backend only if R, `qgam`, `mgcv`, and `r
 pip install "measurement-mechanistic-rca[qgam]"
 ```
 
-## Quick Start
+## Running Example: Same Root Cause, Different Anomaly Types
 
-The graph must be a `networkx.DiGraph`, and data must be an `n x d` NumPy array whose columns match the graph node indices.
+Consider the causal graph `W <- X -> Y -> Z`. We generate 500 observations
+using `Y = 0.8 X + noise`, `Z = 1.2 Y + noise`, and `W = -X + noise`,
+with independent Gaussian noise. Columns follow the node indices `[X, Y, Z, W]`.
+
+We inject two anomalies at **Y**:
+
+- **Row 0 — measurement:** add 4 to the recorded Y *after* generating Z.
+  The physical process is unchanged, so Z does not respond to the recording error.
+- **Row 1 — mechanistic:** add 4 to Y *before* generating Z.
+  The shift propagates to Z through its usual mechanism.
+
+Thus both rows violate `X -> Y`, but only the measurement anomaly also breaks
+`Y -> Z`. Neither changes `X -> W`.
+
+### 1. Generate the synthetic data
 
 ```python
 import networkx as nx
@@ -36,47 +50,142 @@ import numpy as np
 
 from measurement_mechanistic_rca import MeasurementMechanisticRCA
 
-dag = nx.DiGraph([(0, 1), (1, 2)])
-data = np.random.normal(size=(100, 3))
+# Column indices: X=0, Y=1, Z=2, W=3.
+names = ["X", "Y", "Z", "W"]
+dag = nx.DiGraph([(0, 1), (1, 2), (0, 3)])
 
-model = MeasurementMechanisticRCA()
-result = model.fit_explain(data, dag)
 
-print(result.assignment)
-print(result.top_features(sample_idx=0, k=3))
+def make_data(n, seed, contaminated=False):
+    rng = np.random.default_rng(seed)
+    x = rng.normal(size=n)
+    y = 0.8 * x + rng.normal(scale=0.15, size=n)
+
+    if contaminated:
+        y[1] += 4.0  # Mechanism shift at Y, BEFORE generating its child Z.
+
+    z = 1.2 * y + rng.normal(scale=0.15, size=n)
+    w = -x + rng.normal(scale=0.15, size=n)
+
+    if contaminated:
+        y[0] += 4.0  # Measurement error at Y, AFTER generating Z.
+
+    return np.column_stack([x, y, z, w])
+
+
+data = make_data(n=500, seed=7, contaminated=True)
 ```
 
-`result.feature_scores[i, j]` scores feature `j` as a root cause for sample `i`. `result.classifications[i, j]` is `1` for measurement-origin explanations and `0` for generative-origin explanations.
+![The two injected anomalies across the three causal relationships](https://raw.githubusercontent.com/hsuhr99/measurement_mechanistic_rca/main/examples/assets/running_example.png)
 
-## Provided Priors
+Gray points show normal observations, blue the measurement anomaly, and orange
+the mechanistic anomaly.
 
-If you have prior probabilities for measurement and generative anomalies, pass them directly. Priors can be global vectors of shape `(d,)` or sample-specific arrays of shape `(n, d)`.
+### 2. Localize and classify the two anomalies
+
+Use `fit_explain(data, dag)` to learn the mechanisms and explain the contaminated
+data in one step.
 
 ```python
-measurement_priors = np.array([0.01, 0.10, 0.01])
-generative_priors = np.array([0.02, 0.02, 0.05])
+np.random.seed(7)
+result = MeasurementMechanisticRCA().fit_explain(data, dag)
 
-result = model.fit_explain(
+
+def show_results(result):
+    for row in (0, 1):
+        cause = result.top_features(sample_idx=row, k=1)[0]
+        print(f"row {row}: root cause {names[cause.feature]}, type {cause.anomaly_type}")
+
+
+show_results(result)
+```
+
+Expected output:
+
+```text
+row 0: root cause Y, type measurement
+row 1: root cause Y, type mechanistic
+```
+
+Both anomalies are correctly localized at Y and classified by type. The unusual
+Z value in row 1 is a downstream effect of the mechanism shift at Y.
+
+To inspect the highest-ranked cause for a sample:
+
+```python
+cause = result.top_features(sample_idx=0, k=1)[0]
+print(names[cause.feature], cause.anomaly_type)  # Y measurement
+```
+
+The result also includes the root-cause score and conditional confidence in its type:
+
+```python
+print(cause.score)
+print(cause.conditional_confidence)
+```
+
+Conditional confidence compares the competing type explanations while keeping
+other assignments fixed. It is a cost difference, not a probability. Types are
+`measurement`, `mechanistic`, `uncertain` when the origin is unresolved, or
+`both` when inference with priors selects both types.
+
+To inspect the features assigned to each anomaly type:
+
+```python
+measurement_features = result.assignment[0]["measurement"]
+mechanistic_features = result.assignment[1]["mechanistic"]
+
+print([names[j] for j in measurement_features])  # ['Y']
+print([names[j] for j in mechanistic_features])  # ['Y']
+```
+
+### 3. Train on clean data and explain future samples
+
+Use `fit` to learn the normal mechanisms from clean data, then `explain` for
+new samples. This requires prior probabilities for measurement and mechanistic
+anomalies, since clean data does not reveal how often future interventions occur.
+Here we set each probability to 1% per feature.
+
+```python
+clean_data = make_data(n=500, seed=8)
+new_samples = make_data(n=100, seed=9, contaminated=True)
+
+measurement_priors = np.full(4, 0.01)
+mechanistic_priors = np.full(4, 0.01)
+
+np.random.seed(7)
+model = MeasurementMechanisticRCA().fit(clean_data, dag)
+future_result = model.explain(
+    new_samples,
+    measurement_priors=measurement_priors,
+    mechanistic_priors=mechanistic_priors,
+)
+show_results(future_result)
+```
+
+This identifies Y as the root cause for both new anomalies and returns the same
+types as above. The learned mechanisms remain fixed during `explain`.
+
+### Optional: supplied priors for contaminated data
+
+The same priors can also be passed to `fit_explain`:
+
+```python
+np.random.seed(7)
+result_with_priors = MeasurementMechanisticRCA().fit_explain(
     data,
     dag,
     measurement_priors=measurement_priors,
-    generative_priors=generative_priors,
+    mechanistic_priors=mechanistic_priors,
 )
+show_results(result_with_priors)
 ```
 
-## Clean Training Data
+Priors can have shape `(d,)` for one probability per feature or `(n, d)` for
+sample-specific probabilities. With supplied priors, the default `single_root`
+mode assumes at most one root-cause feature per sample; `prior_mode="exhaustive"`
+allows multiple root causes in small graphs.
 
-When mechanisms are learned from uncontaminated data, priors must be provided for inference on new samples.
-
-```python
-model = MeasurementMechanisticRCA()
-model.fit(clean_data, dag)
-result = model.explain(
-    new_samples,
-    measurement_priors=measurement_priors,
-    generative_priors=generative_priors,
-)
-```
+Run the full example in the [notebook](https://github.com/hsuhr99/measurement_mechanistic_rca/blob/main/examples/method_usage.ipynb) or with `python examples/running_example.py` from a repository checkout.
 
 ## Causal Discovery
 
@@ -93,9 +202,7 @@ NoGAM is bundled through the optional `causal-discovery` extra and has no R depe
 
 ## Replication Package
 
-This PyPI package is intentionally lightweight. It includes the high-level RCA API, the minimal `cali` method implementation, and optional NoGAM support. It does not include the full NeurIPS replication package, experiment runners, plots, results, TOPIC, M2OE, or other external baselines.
-
-For exact paper experiments, use the [git repository](https://github.com/hsuhr99/measurement_mechanistic_rca) and the replication instructions there.
+For the paper experiments and Docker setup, see the [replication instructions](https://github.com/hsuhr99/measurement_mechanistic_rca/blob/main/replication_neurips/README.md).
 
 ## Citation
 
