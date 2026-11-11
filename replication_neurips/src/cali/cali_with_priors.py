@@ -9,6 +9,7 @@ from sklearn.preprocessing import RobustScaler
 from .cali import calculate_residuals, regress_dag, sample_cost
 from .sampling import KNNSampler, RandomSampler
 from .utils import fit_dists
+from .interventions import intervention_bounds
 
 
 STATE_NONE = 0
@@ -266,8 +267,7 @@ def _setup_common(
 ):
     scaled_data = RobustScaler().fit_transform(data)
     n, d = scaled_data.shape
-    data_min = scaled_data.min(axis=0)
-    data_max = scaled_data.max(axis=0)
+    data_min, data_max = intervention_bounds(scaled_data.min(axis=0), scaled_data.max(axis=0))
 
     parent_child_pairs = [(child, list(dag.predecessors(child))) for child in dag.nodes]
     if functions is None:

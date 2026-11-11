@@ -49,6 +49,17 @@ class ConstantFunction:
     
         return corrected_alpha
 
+class ConstantConditionalFunction(ConstantFunction):
+    """Intercept-only mechanism with the conditional regressors' interface."""
+
+    def predict(self, X, se_fit=False):
+        values = super().predict(X)
+        return values, (np.zeros_like(values) if se_fit else None)
+
+    def get_residuals(self, X, y):
+        return np.asarray(y).reshape(-1) - self.predict(X)[0]
+
+
 def calculate_samples_needed(alpha_corrected, min_tail_samples=10):
     """
     Calculate the number of samples needed to reliably estimate the distribution tail.

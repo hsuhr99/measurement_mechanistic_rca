@@ -3,7 +3,8 @@ import numpy as np
 from .robust_regression.utils import log_binom
 from .robust_regression.qgam_regression import robustly_regress_qgam
 from joblib import Parallel, delayed
-from .utils import ConstantFunction, fit_dists
+from .utils import ConstantFunction, ConstantConditionalFunction, fit_dists
+from .interventions import intervention_bounds, uniform_cost as _uniform_cost
 
 from sklearn.preprocessing import RobustScaler
 RUN_PARALLEL = False
@@ -19,7 +20,7 @@ from scipy.special import logsumexp
 
 def uniform_cost(a,b):
 
-    return np.log2(b-a)
+    return _uniform_cost(a, b)
 
 
 def _scalar(value):
@@ -33,6 +34,9 @@ def _regress_single(child, parents, data,regression_alg="QGAM",regression_settin
     else:
         X = data[:, parents]
         y = data[:, child].reshape((-1, 1))
+        if np.ptp(y) == 0 or np.all(np.ptp(X, axis=0) == 0):
+            # No conditional relationship can be estimated in this case.
+            return ((tuple(sorted(parents)), child), ConstantConditionalFunction(y))
         if regression_alg in {"QGAM", "SKLEARN_QUANTILE_SPLINE", "PYGAM_EXPECTILE"}:
             settings = regression_settings or {}
             backend = settings.get("backend")
@@ -83,6 +87,7 @@ def sample_cost(row_id, data, data_min, data_max, dag, functions,
                     setting="MARGINALIZE", N_MC=100):
 
     
+    data_min, data_max = intervention_bounds(data_min, data_max)
     cost = 0.0
     D = data.shape[1]
     all_indices = set(range(D))
@@ -380,8 +385,7 @@ def assign_errors( dag,
     
     # Calculate accumulated residuals for each sample
     n, d = data.shape
-    data_min = data.min(axis=0)
-    data_max = data.max(axis=0)
+    data_min, data_max = intervention_bounds(data.min(axis=0), data.max(axis=0))
     successors = {j: list(dag.successors(j)) for j in dag.nodes()}
     
     u_cost = uniform_cost(a=data_min,b=data_max)
@@ -649,8 +653,7 @@ def cali(
 
     n, d = data.shape
     data = data.copy()
-    data_max = data.max(axis=0)
-    data_min = data.min(axis=0)
+    data_min, data_max = intervention_bounds(data.min(axis=0), data.max(axis=0))
 
     feature_scores = np.zeros_like(data)
 

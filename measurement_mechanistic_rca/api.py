@@ -31,6 +31,7 @@ from cali.cali_with_priors import (  # noqa: E402
 )
 from cali.sampling import KNNSampler, RandomSampler  # noqa: E402
 from cali.utils import fit_dists  # noqa: E402
+from cali.interventions import intervention_bounds  # noqa: E402
 
 
 RegressionBackend = Literal["quantile", "expectile", "qgam"]
@@ -181,8 +182,9 @@ class MeasurementMechanisticRCA:
         self.dag_ = dag.copy()
         self.scaler_ = RobustScaler().fit(data)
         self.scaled_clean_data_ = self.scaler_.transform(data)
-        self.data_min_ = self.scaled_clean_data_.min(axis=0)
-        self.data_max_ = self.scaled_clean_data_.max(axis=0)
+        self.data_min_, self.data_max_ = intervention_bounds(
+            self.scaled_clean_data_.min(axis=0), self.scaled_clean_data_.max(axis=0)
+        )
 
         parent_child_pairs = [(child, list(self.dag_.predecessors(child))) for child in self.dag_.nodes]
         self.functions_ = regress_dag(

@@ -1,5 +1,7 @@
 # Measurement-Mechanistic RCA
 
+[![PyPI](https://img.shields.io/pypi/v/measurement-mechanistic-rca)](https://pypi.org/project/measurement-mechanistic-rca/)
+
 This repository contains a Python package for measurement-mechanistic root cause analysis and the replication package for the NeurIPS paper [Root Cause Analysis of Measurement and Mechanistic Anomalies](https://openreview.net/forum?id=2sxylzR1R2).
 
 Install the method with `pip`, or use the replication package to run the paper experiments. The default installation requires no R.
